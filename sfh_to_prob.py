@@ -46,8 +46,8 @@ def get_50(tlo, thi, sfr_med, sfr_pl, sfr_mn,
     for i in range(nbins):
         _pl = np.sqrt(np.sum((sfr_pl*tbins)**2)-(sfr_pl[i]*tbins[i])**2)
         _mn = np.sqrt(np.sum((sfr_mn*tbins)**2)-(sfr_mn[i]*tbins[i])**2)
-        corr_pl = _mn #if _mn<=sf_pl[i] else sf_pl[i]
-        corr_mn = _pl #if _pl<=sf_mn[i] else sf_mn[i]
+        corr_pl = _mn
+        corr_mn = _pl
         total_hi[i] = total_med+sf_pl[i]-corr_pl
         total_lo[i] = total_med-sf_mn[i]+corr_mn
         
@@ -171,8 +171,8 @@ def get_50(tlo, thi, sfr_med, sfr_pl, sfr_mn,
     ax.text(age_likely[1]+2, 0.44, '{:.1f} - {:.1f} M$_\odot$'.format(m_likely[0],m_likely[1]),
             fontsize=18, weight='bold')
 
-    ax.text(4, 0.52, 'Maximum Allowed: ', fontsize=14, weight='bold')
-    ax.text(4, 0.44, '{:.1f} - {:.1f} M$_\odot$'.format(m_allowed[0],m_allowed[1]),
+    ax.text(4, 0.32, 'Maximum Allowed: ', fontsize=14, weight='bold')
+    ax.text(4, 0.24, '{:.1f} - {:.1f} M$_\odot$'.format(m_allowed[0],m_allowed[1]),
             fontsize=18, weight='bold')
 
     plt.xlabel('Age (Myr)', fontsize=20, weight='bold')
@@ -186,6 +186,8 @@ def get_50(tlo, thi, sfr_med, sfr_pl, sfr_mn,
     if verbose:
         totals = np.hstack([total_lo,total_hi])
         _t = [totals.min(),total_med,totals.max()]
+
+        print('\n\n***** Filename: {:s} *****\n'.format(str(filename)))
         
         print('\n === Error Propagation ===\n\n1-Sigma required Star Formation (M_sun)')
         [print('{:d}'.format(int(_t[i].round()))) for i in range(3)]
@@ -210,7 +212,7 @@ def get_50(tlo, thi, sfr_med, sfr_pl, sfr_mn,
         print('\nProbable Age Range:\n{:.1f} - {:.1f} Myr'.format(age_likely[0],age_likely[1]))
         
         print('\nMaximum Mass Range:\n{:.1f} - {:.1f} solar masses'.format(m_allowed[0],m_allowed[1]))
-        print('\nMinimum Age Range:\n{:.1f} - {:.1f} Myr'.format(age_allowed[0],age_allowed[1]))
+        print('\nMinimum Age Range:\n{:.1f} - {:.1f} Myr\n\n'.format(age_allowed[0],age_allowed[1]))
 
     ''' Table of Probability Distribution '''
     data = np.array([['{:.1f}'.format(float(10**(tlo[i]-6))),
@@ -247,8 +249,9 @@ if __name__ == '__main__':
     args = parse_all()
     nbins,n,verbose,latex = args.nbins,args.n,(not args.silent),args.latex
 
-    #with concurrent.futures.ProcessPoolExecutor(max_workers=os.cpu_count()) as e:
-    for filename in args.filenames:
-        #tmp = e.submit(DoAll,filename,nbins,n,verbose,latex)
-        DoAll(filename,nbins,n,verbose,latex)
+    with concurrent.futures.ProcessPoolExecutor(max_workers=os.cpu_count()) as e:
+        for filename in args.filenames:
+            tmp = e.submit(DoAll,filename,nbins,n,verbose,latex)
+
+    #DoAll(filename,nbins,n,verbose,latex)
     print('\n\nCompleted in %.3f seconds \n' % (time.time()-tic))
