@@ -1,9 +1,24 @@
 #! /usr/bin/env python
 '''
-Examples:
-./sfh_to_prob.py dir3/fit_gst311b.err -nbins 22 -n 500000 -silent -latex
-ls dir?/*.err | xargs ./sfh_to_prob.py -nbins 22 -n 500000 -latex > SFH_Tables.tex
+Estimate cumulative star formation history median distribution from
+hybridMC produced star formation history (SFR per age bin).
+
+Requires "isochrones" directory for stellar evolution model endpoints.
+
+Usage:
+
+1. For a single file:
+./sfh_to_prob.py dir_ABC/fit_XYZ.complete -nbins 22 -n 500000
+
+Use -nbins 22 for 50 Myr, -nbins 26 for 80 Myr
+Increase -n value for larger randm sampling if job fails
+These two parameters must be integers, e.g., "-nbins 22.0" oe
+"-n 1e7" will fail. 
+
+2. For mutiple files, mute screen output and produce latex tables:
+ls $PATH/*/*.complete | xargs ./sfh_to_prob.py -nbins 22 -n 500000 -silent -latex
 '''
+
 import matplotlib
 matplotlib.use('Agg')
 from matplotlib import pyplot as plt
@@ -12,13 +27,11 @@ import time, argparse, concurrent.futures, os
 import numpy as np
 import pandas as pd
 
-
-def DoAll(filename,nbins=22,n=100000,verbose=False,latex=False):
+def DoAll(filename,fid,nbins=22,n=1000000,verbose=False,latex=False):
     tlo,thi,sfr_med,sfr_pl,sfr_mn = np.loadtxt(filename, 
         usecols=[0, 1, 3, 4, 5], unpack=True, skiprows=1)
-    pdf = get_50(tlo, thi, sfr_med, sfr_pl, sfr_mn, nbins, n, verbose, filename)
-    if latex: print('\n\n***** Filename: {:s} *****\n'.format(str(filename)),
-              '\n %=== Probability Distribution ===\n',pdf[:].to_latex(index=False))
+    pdf = get_50(tlo, thi, sfr_med, sfr_pl, sfr_mn, nbins, n, verbose, fid)
+    if latex: pdf.to_latex(open(fid+'.tex','w'),index=False)
     return
 
 
@@ -32,8 +45,7 @@ def get_50(tlo, thi, sfr_med, sfr_pl, sfr_mn,
     sf_lo,sf_hi = sf_med-sf_mn,sf_med+sf_pl
     total_med = sf_med.sum()
     total_lo,total_hi = np.zeros(nbins),np.zeros(nbins)
-
-
+    
     ''' Cumulative Star Formation (CSF) in each age bin '''
     csf_med = np.cumsum(sf_med)
 
@@ -62,24 +74,26 @@ def get_50(tlo, thi, sfr_med, sfr_pl, sfr_mn,
     sf_1sig  = [totals.min(),totals.max()]
 
     ''' Generate cumulative distributions consistent with best fit model'''
-    rands = np.random.randn(n,nbins)
-    rands1,rands2 = rands.copy(),rands.copy()
+    rands1 = np.random.randn(n,nbins)
+    rands2 = rands1.copy()
     rands1[rands1<0],rands2[rands2>0]  = 0,0
     _err = np.array([sfr_pl*rand for rand in rands1])+np.array([sfr_mn*rand for rand in rands2])
-    _sfr = np.array([sfr_med+err for err in _err]); del rands,rands1,rands2,_err;
+    del rands1,rands2
+    _sfr = np.array([sfr_med+err for err in _err]); del _err;
     _sfr[_sfr<0]=0
     _sf = np.array([tbins*sim for sim in _sfr]); del _sfr; 
     _totals = _sf.sum(axis=1)
     _sf1 = _sf[(_totals<sf_1sig[0]),]
     _sf2 = _sf[((_totals>=sf_1sig[0])&(_totals<=sf_1sig[1])),]
-    _sf3 = _sf[(_totals>sf_1sig[1]),]
+    _sf3 = _sf[(_totals>sf_1sig[1]),]; del _sf,_totals;
     _in1 = np.random.randint(low=0,high=_sf1.shape[0],size=int(np.ceil(_sf2.shape[0]/4.25)))    
     _in3 = np.random.randint(low=0,high=_sf3.shape[0],size=int(np.ceil(_sf2.shape[0]/4.25)))
-    sim_sf = np.vstack((_sf1[_in1],_sf2,_sf3[_in3])); del _sf,_sf1,_sf2,_sf3,_totals,_in1,_in3
+    sim_sf = np.vstack((_sf1[_in1],_sf2,_sf3[_in3])); del _sf1,_sf2,_sf3,_in1,_in3
     sim_sf_norm = np.array([sf/sf.sum() for sf in sim_sf])
-    sim_csf = np.cumsum(sim_sf,axis=1)
-    sim_csf_norm = np.array([csf/csf[-1] for csf in sim_csf]) 
-    sim_totals = sim_csf[:,-1]
+    sim_sf_len = sim_sf.shape[0]
+    sim_csf = np.cumsum(sim_sf,axis=1); del sim_sf;
+    sim_csf_norm = np.array([csf/csf[-1] for csf in sim_csf])
+    sim_totals = sim_csf[:,-1]; del sim_csf;
     sim_csf_16 = np.percentile(sim_csf_norm,16,axis=0)
     sim_csf_50 = np.percentile(sim_csf_norm,50,axis=0)
     sim_csf_84 = np.percentile(sim_csf_norm,84,axis=0)
@@ -105,7 +119,7 @@ def get_50(tlo, thi, sfr_med, sfr_pl, sfr_mn,
             tbin_50.append(int(0))
             
     age_likely=[10**(tlo[np.amin(tbin_50)]-6),10**(thi[np.amax(tbin_50)]-6)]
-
+    
     ''' Highest mass of surviving stars for the most likely age range
     Isochrones from https://github.com/tristan3214/MatchExecuter/tree/master/isochrones '''
     M_max = []
@@ -115,7 +129,7 @@ def get_50(tlo, thi, sfr_med, sfr_pl, sfr_mn,
         iso2 = pd.read_csv('isochrones/z_0-19_{:s}'.format(t2), delim_whitespace=True)
         M_max.append(np.array([iso1['M_ini'].values[-1],iso2['M_ini'].values[-1]]))
     m_likely  = [np.amin(M_max).round(1),np.amax(M_max).round(1)]
-  
+    
     M_mass = []
     for t in np.hstack((tlo[0],thi[:])):
         t = str(t).replace(".", "-")
@@ -123,7 +137,7 @@ def get_50(tlo, thi, sfr_med, sfr_pl, sfr_mn,
         M_mass.append(iso['M_ini'].values[-1])
     _max = np.array(M_mass[:-1])
     _min = np.array(M_mass[1:])
-
+    
     ''' Kroupa Normalization '''
     kr_tot = (0.08**1.7 - 0.008**1.7)/1.7 + \
     (0.5**0.7 - 0.08**0.7)/0.7 + ((1/(0.5**0.3))-(1/(100**0.3)))/0.3
@@ -139,9 +153,11 @@ def get_50(tlo, thi, sfr_med, sfr_pl, sfr_mn,
     allowed = ((over_max >= _max)|(over_min >= _min))
     m_allowed = [_min[allowed][0].round(1), _max[allowed][0].round(1)]
     age_allowed = [10**(tlo[allowed][0]-6), 10**(thi[allowed][0]-6)]
-
-    ''' Make CDF Plot '''
+    
+    ''' Make CDF Plot ''' 
     x = 10**(np.hstack((tlo[0],thi[:]))-6)
+    xx = [(x[i]+x[i+1])/2 for i in range(len(x)-1)]
+    
     y1 = np.hstack(([1],1-np.array(sim_csf_16,dtype=float)))
     y2 = np.hstack(([1],1-csf_med_norm))
     y3 = np.hstack(([1],1-np.array(sim_csf_84,dtype=float)))
@@ -149,39 +165,51 @@ def get_50(tlo, thi, sfr_med, sfr_pl, sfr_mn,
     y5 = np.array([y1,y2,y3]).max(axis=0)
 
     plt.rc("font", family='serif', weight='bold')
-    plt.rc("xtick", labelsize=15); plt.rc("ytick", labelsize=15)
+    plt.rc("xtick", labelsize=25); plt.rc("ytick", labelsize=25)
     
-    fig, ax = plt.subplots(1,1,figsize=(12,8))
-    plt.xlim(3,51); plt.ylim(-0.05,1.05)
+    fig, ax = plt.subplots(1,2,figsize=(24,12))
+    ax[0].set_xlim(3,51); ax[0].set_ylim(-0.05,1.05)
 
-    ax.plot(x,y2,'r-',label='Best Fit SFR')
-    ax.plot(x,y3,'g-',label='High SFR')
-    ax.plot(x,y1,'b--',label='Low SFR')
-    ax.legend(loc=1, fontsize=15);
+    ax[0].plot(x,y2,'r-',label='Best Fit cumSF')
+    ax[0].plot(x,y3,'g-',label='$84^{th}$ prc. cumSF')
+    ax[0].plot(x,y1,'b--',label='$16^{th}$ prc. cumSF')
+    ax[0].legend(loc=1, fontsize=25);
 
-    ax.fill_between(x,y4,y5,color='k',alpha=0.3)
-    ax.fill_between(age_likely,[-0.05],[1.05],color='#F5B041',alpha=0.2)
-    ax.fill_between(age_allowed,[-0.05],[1.05],color='#8E44AD',alpha=0.2)
+    ax[0].fill_between(x,y4,y5,color='k',alpha=0.3)
+    ax[0].fill_between(age_likely,[-0.05],[1.05],color='#F5B041',alpha=0.2)
+    ax[0].fill_between(age_allowed,[-0.05],[1.05],color='#8E44AD',alpha=0.2)
 
-    ax.plot([-1,51],[0.84,0.84],'k:')
-    ax.plot([-1,51],[0.5,0.5],'k:')
-    ax.plot([-1,51],[0.16,0.16],'k:')
+    ax[0].plot([-1,51],[0.84,0.84],'k:')
+    ax[0].plot([-1,51],[0.5,0.5],'k:')
+    ax[0].plot([-1,51],[0.16,0.16],'k:')
 
-    ax.text(age_likely[1]+2, 0.52, 'Probable Range: ', fontsize=14, weight='bold')
-    ax.text(age_likely[1]+2, 0.44, '{:.1f} - {:.1f} M$_\odot$'.format(m_likely[0],m_likely[1]),
-            fontsize=18, weight='bold')
+    ax[0].text(age_likely[1]+0.1, 0.52, 'Probable Range: ', fontsize=24, weight='bold')
+    ax[0].text(age_likely[1]+0.1, 0.44, '{:.1f} - {:.1f} M$_\odot$'.format(m_likely[0],m_likely[1]),
+            fontsize=28, weight='bold')
+    
+    ax[0].text(4, 0.32, 'Maximum Allowed: ', fontsize=24, weight='bold')
+    ax[0].text(4, 0.24, '{:.1f} - {:.1f} M$_\odot$'.format(m_allowed[0],m_allowed[1]),
+            fontsize=28, weight='bold')
 
-    ax.text(4, 0.32, 'Maximum Allowed: ', fontsize=14, weight='bold')
-    ax.text(4, 0.24, '{:.1f} - {:.1f} M$_\odot$'.format(m_allowed[0],m_allowed[1]),
-            fontsize=18, weight='bold')
+    ax[0].set_xlabel('Age (Myr)', fontsize=25, weight='bold')
+    ax[0].set_ylabel('Cumulative Stellar Mass Fraction', fontsize=25,weight='bold')
+    ax[0].set_title('Probability of Core-Collapse Progenitor Age',fontsize=25,weight='bold')
+    
+    ax[1].set_xlim(3,51)
+    ax[1].set_ylim(0,sfr_med.max()*1e6+sfr_pl.max()*1e6+100)
 
-    plt.xlabel('Age (Myr)', fontsize=20, weight='bold')
-    plt.ylabel('Cumulative Stellar Mass Fraction', fontsize=20,weight='bold')
-    plt.suptitle('Probability of Core-Collapse Progenitor Age',fontsize=25,weight='bold')
-    plt.savefig(filename.split('.')[:-1][0]+'_CDF.png')
+    ax[1].step(x,np.hstack((0,sfr_med[:22]*1e6)),linewidth=3)
+    ax[1].errorbar(xx,sfr_med*1e6,yerr=[sfr_mn*1e6,sfr_pl*1e6],fmt='none',linewidth=3)
+
+    ax[1].set_xlabel('Age (Myr)', fontsize=25, weight='bold')
+    ax[1].set_ylabel('Star Formation Rate (M$_{\odot}$ / Myr)', fontsize=25,weight='bold')
+    ax[1].set_title('Star Formation History',fontsize=25,weight='bold')
+ 
+    plt.savefig(filename+'_CDF.png')
     #plt.show()
     plt.close('all')
 
+    
     ''' Summary '''
     if verbose:
         totals = np.hstack([total_lo,total_hi])
@@ -193,7 +221,7 @@ def get_50(tlo, thi, sfr_med, sfr_pl, sfr_mn,
         [print('{:d}'.format(int(_t[i].round()))) for i in range(3)]
 
         print('\n === Random Sampling: Accepted {:d}/{:d}==='
-              .format(int(sim_sf.shape[0]),int(n)))
+              .format(int(sim_sf_len),int(n)))
             
         mid68_sf = [float(np.percentile(sim_totals,16)),
                     float(np.percentile(sim_totals,50)),
@@ -217,25 +245,30 @@ def get_50(tlo, thi, sfr_med, sfr_pl, sfr_mn,
     ''' Table of Probability Distribution '''
     data = np.array([['{:.1f}'.format(float(10**(tlo[i]-6))),
                       '{:.1f}'.format(float(10**(thi[i]-6))),
+                      '{:.4e}'.format(float(sfr_med[i])),
+                      '{:.4e}'.format(float(sfr_mn[i])),
+                      '{:.4e}'.format(float(sfr_pl[i])),
                       '{:.3f}'.format(float(sf_med_norm[i])),
-                      '{:.3f}'.format(float(err_pl[i])),
                       '{:.3f}'.format(float(err_mn[i])),
-                      '{:.3f}'.format(float(sf_lo_norm[i])),
-                      '{:.3f}'.format(float(sf_hi_norm[i])),
+                      '{:.3f}'.format(float(err_pl[i])),
                       '{:.3f}'.format(float(csf_med_norm[i])),
                       '{:.3f}'.format(float(sim_csf_16[i])),
                       '{:.3f}'.format(float(sim_csf_50[i])),
-                      '{:.3f}'.format(float(sim_csf_84[i]))]
+                      '{:.3f}'.format(float(sim_csf_84[i])),
+                      '{:.1f}'.format(float(_min[i])),
+                      '{:.1f}'.format(float(_max[i]))]
                      for i in range(nbins)])
-    return pd.DataFrame(data,columns=['T1(Myr)','T2(Myr)','P(Best)','+err','-err',
-                   '    P(Lo)','P(Hi)','CDF(Best)','CDF(16)','CDF(50)','CDF(84)'])
-
+    return pd.DataFrame(data,columns=['T1','T2',
+                          'SFR (Best)','-err','+err',
+                          '  PDF(Best)','-err','+err',
+                          '  CDF(Best)',' CDF(16)','CDF(50)','CDF(84)',
+                                      '     M1','  M2'])
 
 '''Argument parser '''
 def parse_all():
     parser = argparse.ArgumentParser()
     parser.add_argument('filenames', nargs='+',help='Photomtery file names')
-    parser.add_argument('--NRAND', '-n', type=int, dest='n', default=1000, help='Random Sample Count')
+    parser.add_argument('--NRAND', '-n', type=int, dest='n', default=100000, help='Random Sample Count')
     parser.add_argument('--NBINS', '-nbins', type=int, dest='nbins', default=22, help='# of youngest age bins to keep')
     parser.add_argument('--SILENT', '-silent', dest='silent', default=False, action='store_true', help='Talkative?')
     parser.add_argument('--LATEX', '-latex', dest='latex', default=False, action='store_true', help='Produce Table?')
@@ -251,7 +284,6 @@ if __name__ == '__main__':
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=os.cpu_count()) as e:
         for filename in args.filenames:
-            tmp = e.submit(DoAll,filename,nbins,n,verbose,latex)
+            tmp = e.submit(DoAll,filename,filename,nbins,n,verbose,latex)
 
-    #DoAll(filename,nbins,n,verbose,latex)
     print('\n\nCompleted in %.3f seconds \n' % (time.time()-tic))
